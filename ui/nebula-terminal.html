@@ -176,10 +176,15 @@ const XTERM_JS    = `${CDN}/xterm@5.3.0/lib/xterm.js`;
 const FIT_JS      = `${CDN}/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js`;
 const LIBV86_JS   = `${CDN}/v86@${V86_VER}/build/libv86.js`;
 const V86_WASM    = `${CDN}/v86@${V86_VER}/build/v86.wasm`; // v86 auto-loads v86-fallback.wasm here too (no-SAB path)
-const SEABIOS     = `${GH}/bios/seabios.bin`;
-const VGABIOS     = `${GH}/bios/vgabios.bin`;
-// Kernel image (real Linux). copy.sh hosts the v86 images with permissive CORS.
-const KERNEL      = 'https://k.copy.sh/buildroot-bzimage.bin';
+
+// Boot files (BIOS + real Linux kernel). Each is tried in order: a same-origin
+// copy in ./assets/ first (most reliable — no third-party host, works on GitHub
+// Pages and offline), then public CDN mirrors as a fallback. Drop the three
+// files into an `assets/` folder next to this page and it never needs an
+// external host for them.
+const SEABIOS_URLS = ['assets/seabios.bin', `${GH}/bios/seabios.bin`];
+const VGABIOS_URLS = ['assets/vgabios.bin', `${GH}/bios/vgabios.bin`];
+const KERNEL_URLS  = ['assets/buildroot-bzimage.bin', 'https://i.copy.sh/buildroot-bzimage.bin', 'https://k.copy.sh/buildroot-bzimage.bin'];
 
 // --- tiny helpers ----------------------------------------------------
 const $ = (s)=>document.querySelector(s);
@@ -210,6 +215,33 @@ function loadScript(src, label){
     s.onerror = ()=>reject(new Error('Failed to load '+(label||src)+'.\nThe environment may be blocking this CDN request.'));
     document.head.appendChild(s);
   });
+}
+
+// --- fetch a binary, trying each URL in order, with streamed progress ---
+async function fetchBinary(urls, onProgress){
+  let lastErr;
+  for(const url of urls){
+    try{
+      const res = await fetch(url);
+      if(!res.ok) throw new Error(url + ' → HTTP ' + res.status);
+      const total = +(res.headers.get('content-length') || 0);
+      if(res.body && res.body.getReader){
+        const reader = res.body.getReader();
+        const chunks = []; let received = 0;
+        for(;;){
+          const { done, value } = await reader.read();
+          if(done) break;
+          chunks.push(value); received += value.length;
+          if(onProgress) onProgress(received, total);
+        }
+        const out = new Uint8Array(received); let pos = 0;
+        for(const c of chunks){ out.set(c, pos); pos += c.length; }
+        return out.buffer;
+      }
+      return await res.arrayBuffer();
+    }catch(e){ lastErr = e; /* fall through to next source */ }
+  }
+  throw lastErr || new Error('no sources available');
 }
 
 // --- main ------------------------------------------------------------
@@ -282,14 +314,35 @@ let sawFirstByte = false;
   screen.innerHTML = '<div style="white-space:pre;font:14px monospace;line-height:14px"></div><canvas style="display:none"></canvas>';
   document.body.appendChild(screen);
 
+  // Pre-fetch BIOS + kernel ourselves (same-origin assets/ first, CDN fallback),
+  // so a slow or CORS-restricted third-party host can't stall the boot.
+  let biosBuf, vgaBuf, kernelBuf;
+  try {
+    biosBuf   = await fetchBinary(SEABIOS_URLS);
+    vgaBuf    = await fetchBinary(VGABIOS_URLS);
+    setBar(34);
+    kernelBuf = await fetchBinary(KERNEL_URLS, (recv, total)=>{
+      if(total){ const pct = Math.round((recv/total)*100); setBar(34 + pct*0.50); $('#status-text').textContent = 'Downloading kernel… '+pct+'%'; }
+      else { $('#status-text').textContent = 'Downloading kernel… '+(recv/1048576).toFixed(1)+' MB'; }
+    });
+  } catch(e){
+    return fail('Could not download the boot files.',
+      (e && e.message || e) +
+      '\n\nTried a same-origin assets/ copy first, then CDN mirrors. Most reliable fix: ' +
+      'place seabios.bin, vgabios.bin and buildroot-bzimage.bin in an "assets" folder next to this page. ' +
+      'Also make sure the page is served over http(s) — GitHub Pages, or `python3 -m http.server` — not opened from a file:// path.');
+  }
+  setStage('bios','done'); setStage('boot','on');
+  setStatus('boot','Booting kernel…'); setBar(88);
+
   try {
     emulator = new V86Ctor({
       wasm_path: V86_WASM,
       memory_size: 64 * 1024 * 1024,
       vga_memory_size: 2 * 1024 * 1024,
-      bios:     { url: SEABIOS },
-      vga_bios: { url: VGABIOS },
-      bzimage:  { url: KERNEL, async: false },
+      bios:     { buffer: biosBuf },
+      vga_bios: { buffer: vgaBuf },
+      bzimage:  { buffer: kernelBuf },
       filesystem: {},
       cmdline: 'tsc=reliable mitigations=off random.trust_cpu=on',
       screen_container: screen,
@@ -300,28 +353,14 @@ let sawFirstByte = false;
     return fail('The emulator failed to construct.', e && (e.stack||e.message) || e);
   }
 
-  // download progress -> progress bar
-  emulator.add_listener('download-progress', (e)=>{
-    try{
-      if(e && e.total){
-        const pct = Math.round((e.loaded/e.total)*100);
-        const name = (e.file_name||'').split('/').pop();
-        if(/wasm/i.test(name)) setBar(20 + pct*0.10);
-        else if(/bios/i.test(name)) setBar(30 + pct*0.05);
-        else { setBar(35 + pct*0.45); $('#status-text').textContent = 'Downloading kernel… '+pct+'%'; }
-      }
-    }catch(_){}
-  });
+  // wasm is the only thing v86 still fetches itself (from jsDelivr).
   emulator.add_listener('download-error', (e)=>{
     fail('A required file could not be downloaded.',
       'Failed: ' + ((e && e.file_name) || 'unknown') +
-      '\nThe kernel image is fetched from k.copy.sh — this environment may be blocking that cross-origin request.');
+      '\nThe v86 WebAssembly engine is fetched from the jsDelivr CDN; this environment may be blocking it.');
   });
-
-  // when wasm + images are in, mark bios stage done and move to boot
   emulator.add_listener('emulator-loaded', ()=>{
-    setStage('bios','done'); setStage('boot','on');
-    setStatus('boot','Booting kernel…'); setBar(85);
+    setStage('boot','on'); setStatus('boot','Booting kernel…'); setBar(92);
   });
 
   // --- serial bridge: guest ttyS0 <-> xterm ---
