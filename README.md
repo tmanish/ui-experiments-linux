@@ -10,7 +10,7 @@ Each piece is a self-contained, browser-native interface. Nothing to install, no
 
 ## ▸ View live
 
-- **Home** — https://tmanish.github.io/ui-experiments/
+- **Home** — https://tmanish.github.io/ui-experiments-linux/
 - **Nebula OS** — https://tmanish.github.io/ui-experiments-linux/ui/nebula-os.html
 - **Aurora OS** — https://tmanish.github.io/ui-experiments-linux/ui/aurora-os.html
 - **Nebula Terminal** — https://tmanish.github.io/ui-experiments-linux/ui/nebula-terminal.html
