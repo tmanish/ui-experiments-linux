@@ -6,7 +6,7 @@ This is a **design-first** repository: a showcase of user interface experiments 
 
 Each piece is a self-contained, browser-native interface. Nothing to install, nothing to clone — open the live link and use it.
 
-**Built by a Linux fanboy, for Linux fanboys.** Once a Linux fanboy, always a Linux fanboy.
+**Built by a Linux fanboy, for Linux fanboys.** 
 
 ## ▸ View live
 
